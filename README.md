@@ -26,7 +26,7 @@ To build Alive2 you need recent versions of:
 Building
 --------
 
-Use the `install-alive2.sh` in the class repo. Simply replace the git repository URL should work.
+Use the `install-alive2.sh` in the class repo. Simply replacing the git repository URL should work.
 
 
 Running the Standalone Translation Validation Tool (alive-tv)
