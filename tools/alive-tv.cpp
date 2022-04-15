@@ -10,17 +10,18 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
-#include "llvm/InitializePasses.h"
-#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/Module.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include <fstream>
@@ -41,23 +42,26 @@ using namespace llvm_util;
 namespace {
 
 llvm::cl::opt<string> opt_file1(llvm::cl::Positional,
-  llvm::cl::desc("first_bitcode_file"),
-  llvm::cl::Required, llvm::cl::value_desc("filename"),
-  llvm::cl::cat(alive_cmdargs));
+                                llvm::cl::desc("first_bitcode_file"),
+                                llvm::cl::Required,
+                                llvm::cl::value_desc("filename"),
+                                llvm::cl::cat(alive_cmdargs));
 
 llvm::cl::opt<string> opt_file2(llvm::cl::Positional,
-  llvm::cl::desc("[second_bitcode_file]"),
-  llvm::cl::Optional, llvm::cl::value_desc("filename"),
-  llvm::cl::cat(alive_cmdargs));
+                                llvm::cl::desc("[second_bitcode_file]"),
+                                llvm::cl::Optional,
+                                llvm::cl::value_desc("filename"),
+                                llvm::cl::cat(alive_cmdargs));
 
-llvm::cl::opt<std::string> opt_src_fn(LLVM_ARGS_PREFIX "src-fn",
-  llvm::cl::desc("Name of src function (without @)"),
-  llvm::cl::cat(alive_cmdargs), llvm::cl::init("src"));
+llvm::cl::opt<std::string>
+    opt_src_fn(LLVM_ARGS_PREFIX "src-fn",
+               llvm::cl::desc("Name of src function (without @)"),
+               llvm::cl::cat(alive_cmdargs), llvm::cl::init("src"));
 
-llvm::cl::opt<std::string> opt_tgt_fn(LLVM_ARGS_PREFIX"tgt-fn",
-  llvm::cl::desc("Name of tgt function (without @)"),
-  llvm::cl::cat(alive_cmdargs), llvm::cl::init("tgt"));
-
+llvm::cl::opt<std::string>
+    opt_tgt_fn(LLVM_ARGS_PREFIX "tgt-fn",
+               llvm::cl::desc("Name of tgt function (without @)"),
+               llvm::cl::cat(alive_cmdargs), llvm::cl::init("tgt"));
 
 llvm::ExitOnError ExitOnErr;
 
@@ -65,7 +69,7 @@ llvm::ExitOnError ExitOnErr;
 std::unique_ptr<llvm::Module> openInputFile(llvm::LLVMContext &Context,
                                             const string &InputFilename) {
   auto MB =
-    ExitOnErr(errorOrToExpected(llvm::MemoryBuffer::getFile(InputFilename)));
+      ExitOnErr(errorOrToExpected(llvm::MemoryBuffer::getFile(InputFilename)));
   llvm::SMDiagnostic Diag;
   auto M = getLazyIRModule(std::move(MB), Diag, Context,
                            /*ShouldLazyLoadMetadata=*/true);
@@ -102,8 +106,7 @@ struct Results {
 
 Results verify(llvm::Function &F1, llvm::Function &F2,
                llvm::TargetLibraryInfoWrapperPass &TLI,
-               bool print_transform = false,
-               bool always_verify = false) {
+               bool print_transform = false, bool always_verify = false) {
   auto fn1 = llvm2alive(F1, TLI.getTLI(F1));
   if (!fn1)
     return Results::Error("Could not translate '" + F1.getName().str() +
@@ -267,7 +270,107 @@ llvm::Function *findFunction(llvm::Module &M, const string &FName) {
   }
   return 0;
 }
+
+std::pair<llvm::Type *, llvm::Align> getFutureTypeAndAlign(llvm::Type *ty) {
+  switch (ty->getIntegerBitWidth()) {
+  case 8:
+  case 16:
+  case 32:
+  case 64:
+    return std::make_pair(llvm::VectorType::get(ty, 1, false),
+                          llvm::Align(ty->getIntegerBitWidth() / 8));
+  default:
+    return std::make_pair(nullptr, llvm::Align());
+  }
 }
+
+// handle @async_load(Ty*) -> {Ty, dummy}
+// handle @async_wait({Ty, dummy}) -> Ty
+void replaceAsync(llvm::BasicBlock &BB) {
+  bool complete_iter = true;
+  do {
+    complete_iter = true;
+    for (auto &I : BB) {
+      auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
+      if (CI) {
+        if (CI->getCalledFunction()->getName().startswith("async_load")) {
+          auto ptr = CI->getArgOperand(0);
+          auto pty = ptr->getType();
+          auto ty = pty->getPointerElementType();
+          auto name = CI->getName();
+
+          auto [fty, align] = getFutureTypeAndAlign(ty);
+          auto loadInst =
+              new llvm::LoadInst(ty, ptr, llvm::Twine(), false, align, CI);
+          auto castInst = new llvm::BitCastInst(loadInst, fty, name, CI);
+
+          assert(CI->hasOneUser() && "Future must have only one use");
+          auto user = CI->user_back();
+          auto inst = llvm::dyn_cast<llvm::Instruction>(user);
+          auto awaitCall = llvm::dyn_cast<llvm::CallInst>(inst);
+          assert(awaitCall->getCalledFunction()->getName().startswith(
+              "async_wait"));
+          auto awCastInst =
+              new llvm::BitCastInst(castInst, ty, awaitCall->getName());
+          llvm::ReplaceInstWithInst(awaitCall, awCastInst);
+
+          CI->eraseFromParent();
+          complete_iter = false;
+          break;
+        }
+      }
+    }
+  } while (!complete_iter);
+}
+
+// handle @int_sum(Ty, Ty, Ty, Ty, Ty, Ty, Ty, Ty) -> Ty
+void replaceIntSum(llvm::BasicBlock &BB) {
+  bool complete_iter = true;
+  do {
+    complete_iter = true;
+    for (auto &I : BB) {
+      auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
+      if (CI) {
+        if (CI->getCalledFunction()->getName().startswith("int_sum")) {
+          auto op1 = CI->getArgOperand(0);
+          auto op2 = CI->getArgOperand(1);
+          auto op3 = CI->getArgOperand(2);
+          auto op4 = CI->getArgOperand(3);
+          auto op5 = CI->getArgOperand(4);
+          auto op6 = CI->getArgOperand(5);
+          auto op7 = CI->getArgOperand(6);
+          auto op8 = CI->getArgOperand(7);
+
+          auto add1 = llvm::BinaryOperator::Create(llvm::Instruction::Add, op1,
+                                                   op2, llvm::Twine(), CI);
+          auto add2 = llvm::BinaryOperator::Create(llvm::Instruction::Add, add1,
+                                                   op3, llvm::Twine(), CI);
+          auto add3 = llvm::BinaryOperator::Create(llvm::Instruction::Add, add2,
+                                                   op4, llvm::Twine(), CI);
+          auto add4 = llvm::BinaryOperator::Create(llvm::Instruction::Add, add3,
+                                                   op5, llvm::Twine(), CI);
+          auto add5 = llvm::BinaryOperator::Create(llvm::Instruction::Add, add4,
+                                                   op6, llvm::Twine(), CI);
+          auto add6 = llvm::BinaryOperator::Create(llvm::Instruction::Add, add5,
+                                                   op7, llvm::Twine(), CI);
+          auto add7 =
+              llvm::BinaryOperator::Create(llvm::Instruction::Add, add6, op8);
+
+          llvm::ReplaceInstWithInst(CI, add7);
+          complete_iter = false;
+          break;
+        }
+      }
+    }
+  } while (!complete_iter);
+}
+
+// handle intrinsics added for swpp
+void replaceSWPPIntrinsics(llvm::BasicBlock &BB) {
+  replaceAsync(BB);
+  replaceIntSum(BB);
+}
+} // namespace
 
 int main(int argc, char **argv) {
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
@@ -310,9 +413,14 @@ convenient way to demonstrate an existing optimizer bug.
     cerr << "Could not read bitcode from '" << opt_file1 << "'\n";
     return -1;
   }
+  for (auto &F : *M1.get()) {
+    for (auto &BB : F) {
+      replaceSWPPIntrinsics(BB);
+    }
+  }
 
 #define ARGS_MODULE_VAR M1
-# include "llvm_util/cmd_args_def.h"
+#include "llvm_util/cmd_args_def.h"
 
   auto &DL = M1.get()->getDataLayout();
   llvm::Triple targetTriple(M1.get()->getTargetTriple());
@@ -337,6 +445,11 @@ convenient way to demonstrate an existing optimizer bug.
     if (!M2.get()) {
       *out << "Could not read bitcode from '" << opt_file2 << "'\n";
       return -1;
+    }
+    for (auto &F : *M2.get()) {
+      for (auto &BB : F) {
+        replaceSWPPIntrinsics(BB);
+      }
     }
   }
 
@@ -363,10 +476,17 @@ convenient way to demonstrate an existing optimizer bug.
   }
 
   *out << "Summary:\n"
-          "  " << num_correct << " correct transformations\n"
-          "  " << num_unsound << " incorrect transformations\n"
-          "  " << num_failed  << " failed-to-prove transformations\n"
-          "  " << num_errors << " Alive2 errors\n";
+          "  "
+       << num_correct
+       << " correct transformations\n"
+          "  "
+       << num_unsound
+       << " incorrect transformations\n"
+          "  "
+       << num_failed
+       << " failed-to-prove transformations\n"
+          "  "
+       << num_errors << " Alive2 errors\n";
 
 end:
   if (opt_smt_stats)
