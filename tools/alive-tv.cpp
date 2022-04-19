@@ -271,21 +271,23 @@ llvm::Function *findFunction(llvm::Module &M, const string &FName) {
   return 0;
 }
 
-std::pair<llvm::Type *, llvm::Align> getFutureTypeAndAlign(llvm::Type *ty) {
-  switch (ty->getIntegerBitWidth()) {
-  case 8:
-  case 16:
-  case 32:
-  case 64:
-    return std::make_pair(llvm::VectorType::get(ty, 1, false),
-                          llvm::Align(ty->getIntegerBitWidth() / 8));
-  default:
-    return std::make_pair(nullptr, llvm::Align());
+llvm::Align calculatePtrTypeAlign(llvm::Type *pty) {
+  switch (pty->getPointerElementType()->getIntegerBitWidth()) {
+    case 8:
+      return llvm::Align(1);
+    case 16:
+      return llvm::Align(2);
+    case 32:
+      return llvm::Align(4);
+    case 64:
+      return llvm::Align(8);
+    default:
+      // will break at LoadInst anyway...
+      return llvm::Align(1);
   }
 }
 
-// handle @async_load(Ty*) -> {Ty, dummy}
-// handle @async_wait({Ty, dummy}) -> Ty
+// handle @async_load(Ty*) -> Ty
 void replaceAsync(llvm::BasicBlock &BB) {
   bool complete_iter = true;
   do {
@@ -295,26 +297,13 @@ void replaceAsync(llvm::BasicBlock &BB) {
       if (CI) {
         if (CI->getCalledFunction()->getName().startswith("async_load")) {
           auto ptr = CI->getArgOperand(0);
-          auto pty = ptr->getType();
-          auto ty = pty->getPointerElementType();
+          auto ty = CI->getType();
           auto name = CI->getName();
+          auto align = calculatePtrTypeAlign(ptr->getType());
 
-          auto [fty, align] = getFutureTypeAndAlign(ty);
           auto loadInst =
-              new llvm::LoadInst(ty, ptr, llvm::Twine(), false, align, CI);
-          auto castInst = new llvm::BitCastInst(loadInst, fty, name, CI);
-
-          assert(CI->hasOneUser() && "Future must have only one use");
-          auto user = CI->user_back();
-          auto inst = llvm::dyn_cast<llvm::Instruction>(user);
-          auto awaitCall = llvm::dyn_cast<llvm::CallInst>(inst);
-          assert(awaitCall->getCalledFunction()->getName().startswith(
-              "async_wait"));
-          auto awCastInst =
-              new llvm::BitCastInst(castInst, ty, awaitCall->getName());
-          llvm::ReplaceInstWithInst(awaitCall, awCastInst);
-
-          CI->eraseFromParent();
+              new llvm::LoadInst(ty, ptr, name, false, align);
+          llvm::ReplaceInstWithInst(CI, loadInst);
           complete_iter = false;
           break;
         }
