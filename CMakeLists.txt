@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.13)
 include(ProcessorCount)
 
 project(Alive2)
@@ -71,10 +71,6 @@ add_custom_target(
 
 find_package(ZLIB)
 find_package(Z3 4.8.5 REQUIRED)
-# set(LLVM_ROOT )
-# set(Z3_INCLUDE_DIR )
-# set(Z3_LIBRARIES )
-set(BUILD_TV ON)
 include_directories(${Z3_INCLUDE_DIR})
 
 find_program(RE2C re2c)
