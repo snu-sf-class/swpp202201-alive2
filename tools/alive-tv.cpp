@@ -265,17 +265,17 @@ llvm::Function *findFunction(llvm::Module &M, const string &FName) {
 
 llvm::Align calculatePtrTypeAlign(llvm::Type *pty) {
   switch (pty->getPointerElementType()->getIntegerBitWidth()) {
-    case 8:
-      return llvm::Align(1);
-    case 16:
-      return llvm::Align(2);
-    case 32:
-      return llvm::Align(4);
-    case 64:
-      return llvm::Align(8);
-    default:
-      // will break at LoadInst anyway...
-      return llvm::Align(1);
+  case 8:
+    return llvm::Align(1);
+  case 16:
+    return llvm::Align(2);
+  case 32:
+    return llvm::Align(4);
+  case 64:
+    return llvm::Align(8);
+  default:
+    // will break at LoadInst anyway...
+    return llvm::Align(1);
   }
 }
 
@@ -288,14 +288,13 @@ void replaceAsync(llvm::BasicBlock &BB) {
     for (auto &I : BB) {
       auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
       if (CI) {
-        if (CI->getCalledFunction()->getName().startswith("async_load")) {
+        if (CI->getCalledFunction()->getName().startswith("aload")) {
           auto ptr = CI->getArgOperand(0);
           auto ty = CI->getType();
           auto name = CI->getName();
           auto align = calculatePtrTypeAlign(ptr->getType());
 
-          auto loadInst =
-              new llvm::LoadInst(ty, ptr, name, false, align);
+          auto loadInst = new llvm::LoadInst(ty, ptr, name, false, align);
           llvm::ReplaceInstWithInst(CI, loadInst);
           complete_iter = false;
           break;
@@ -305,7 +304,7 @@ void replaceAsync(llvm::BasicBlock &BB) {
   } while (!complete_iter);
 }
 
-// handle @int_sum(Ty, Ty, Ty, Ty, Ty, Ty, Ty, Ty) -> Ty
+// handle @int_sum_<Ty>(Ty, Ty, Ty, Ty, Ty, Ty, Ty, Ty) -> Ty
 void replaceIntSum(llvm::BasicBlock &BB) {
   bool complete_iter = true;
   do {
@@ -347,10 +346,62 @@ void replaceIntSum(llvm::BasicBlock &BB) {
   } while (!complete_iter);
 }
 
+// handle @incr_<Ty>(Ty) -> Ty
+void replaceIncrement(llvm::BasicBlock &BB) {
+  bool complete_iter = true;
+  do {
+    complete_iter = true;
+    for (auto &I : BB) {
+      auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
+      if (CI) {
+        if (CI->getCalledFunction()->getName().startswith("incr")) {
+          auto op = CI->getArgOperand(0);
+          auto ty = CI->getType();
+          auto addInst = llvm::BinaryOperator::Create(
+              llvm::Instruction::Add, op,
+              llvm::Constant::getIntegerValue(
+                  ty, llvm::APInt(ty->getIntegerBitWidth(), 1)));
+
+          llvm::ReplaceInstWithInst(CI, addInst);
+          complete_iter = false;
+          break;
+        }
+      }
+    }
+  } while (!complete_iter);
+}
+
+// handle @decr_<Ty>(Ty) -> Ty
+void replaceDecrement(llvm::BasicBlock &BB) {
+  bool complete_iter = true;
+  do {
+    complete_iter = true;
+    for (auto &I : BB) {
+      auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
+      if (CI) {
+        if (CI->getCalledFunction()->getName().startswith("decr")) {
+          auto op = CI->getArgOperand(0);
+          auto ty = CI->getType();
+          auto addInst = llvm::BinaryOperator::Create(
+              llvm::Instruction::Sub, op,
+              llvm::Constant::getIntegerValue(
+                  ty, llvm::APInt(ty->getIntegerBitWidth(), 1)));
+
+          llvm::ReplaceInstWithInst(CI, addInst);
+          complete_iter = false;
+          break;
+        }
+      }
+    }
+  } while (!complete_iter);
+}
+
 // handle intrinsics added for swpp
 void replaceSWPPIntrinsics(llvm::BasicBlock &BB) {
   replaceAsync(BB);
   replaceIntSum(BB);
+  replaceIncrement(BB);
+  replaceDecrement(BB);
 }
 } // namespace
 
