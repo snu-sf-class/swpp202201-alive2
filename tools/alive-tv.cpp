@@ -287,6 +287,23 @@ llvm::Align calculatePtrTypeAlign(llvm::Type *pty) {
   }
 }
 
+bool checkIntrinsicTypeMatch(llvm::CallInst *CI) {
+  auto ty = CI->getType();
+  auto bw = ty->getIntegerBitWidth();
+  auto bw_str = std::to_string(bw);
+  // not very robust check, but should be sufficient for most of the cases...
+  return CI->getCalledFunction()->getName().endswith(bw_str);
+}
+
+#define CHECK_INTRINSIC(CI)                                                    \
+  {                                                                            \
+    if (!checkIntrinsicTypeMatch(CI)) {                                        \
+      llvm::errs() << "Warning: ill-named SWPP intrinsic ";                    \
+      CI->getCalledFunction()->print(llvm::errs());                            \
+      continue;                                                                \
+    }                                                                          \
+  }
+
 // handle @aload_<Ty>(Ty*) -> Ty
 void replaceAsync(llvm::BasicBlock &BB) {
   bool complete_iter = true;
@@ -296,6 +313,8 @@ void replaceAsync(llvm::BasicBlock &BB) {
       auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
       if (CI) {
         if (CI->getCalledFunction()->getName().startswith("aload")) {
+          CHECK_INTRINSIC(CI);
+
           auto ptr = CI->getArgOperand(0);
           auto ty = CI->getType();
           auto name = CI->getName();
@@ -320,6 +339,8 @@ void replaceIntSum(llvm::BasicBlock &BB) {
       auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
       if (CI) {
         if (CI->getCalledFunction()->getName().startswith("int_sum")) {
+          CHECK_INTRINSIC(CI);
+
           auto op1 = CI->getArgOperand(0);
           auto op2 = CI->getArgOperand(1);
           auto op3 = CI->getArgOperand(2);
@@ -362,8 +383,11 @@ void replaceIncrement(llvm::BasicBlock &BB) {
       auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
       if (CI) {
         if (CI->getCalledFunction()->getName().startswith("incr")) {
+          CHECK_INTRINSIC(CI);
+
           auto op = CI->getArgOperand(0);
           auto ty = CI->getType();
+
           auto addInst = llvm::BinaryOperator::Create(
               llvm::Instruction::Add, op,
               llvm::Constant::getIntegerValue(
@@ -387,6 +411,8 @@ void replaceDecrement(llvm::BasicBlock &BB) {
       auto CI = llvm::dyn_cast<llvm::CallInst>(&I);
       if (CI) {
         if (CI->getCalledFunction()->getName().startswith("decr")) {
+          CHECK_INTRINSIC(CI);
+
           auto op = CI->getArgOperand(0);
           auto ty = CI->getType();
           auto addInst = llvm::BinaryOperator::Create(
