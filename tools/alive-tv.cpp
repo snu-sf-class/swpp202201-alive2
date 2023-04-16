@@ -44,16 +44,14 @@ using namespace llvm_util;
 namespace {
 
 llvm::cl::opt<string> opt_file1(llvm::cl::Positional,
-                                llvm::cl::desc("first_bitcode_file"),
-                                llvm::cl::Required,
-                                llvm::cl::value_desc("filename"),
-                                llvm::cl::cat(alive_cmdargs));
+  llvm::cl::desc("first_bitcode_file"),
+  llvm::cl::Required, llvm::cl::value_desc("filename"),
+  llvm::cl::cat(alive_cmdargs));
 
 llvm::cl::opt<string> opt_file2(llvm::cl::Positional,
-                                llvm::cl::desc("[second_bitcode_file]"),
-                                llvm::cl::Optional,
-                                llvm::cl::value_desc("filename"),
-                                llvm::cl::cat(alive_cmdargs));
+  llvm::cl::desc("[second_bitcode_file]"),
+  llvm::cl::Optional, llvm::cl::value_desc("filename"),
+  llvm::cl::cat(alive_cmdargs));
 
 llvm::cl::opt<std::string>
     opt_src_fn(LLVM_ARGS_PREFIX "src-fn",
@@ -264,7 +262,7 @@ llvm::Function *findFunction(llvm::Module &M, const string &FName) {
 }
 
 llvm::Align calculatePtrTypeAlign(llvm::Type *pty) {
-  switch (pty->getPointerElementType()->getIntegerBitWidth()) {
+  switch (pty->getNonOpaquePointerElementType()->getIntegerBitWidth()) {
   case 8:
     return llvm::Align(1);
   case 16:
@@ -297,8 +295,7 @@ bool checkIntrinsicTypeMatch(llvm::CallInst *CI) {
     }                                                                          \
   }
 
-// handle @async_load(Ty*) -> {Ty, dummy}
-// handle @async_wait({Ty, dummy}) -> Ty
+// handle @aload_<Ty>(Ty*) -> Ty
 void replaceAsync(llvm::BasicBlock &BB) {
   bool complete_iter = true;
   do {
