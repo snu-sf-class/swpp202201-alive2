@@ -2,7 +2,7 @@
 
 # Specify LLVM installation directory
 LLVM_DIR=/opt/llvm
-# Specify Z3 installation directory (Z3 will be installed here!)
+# Specify Z3 installation directory
 Z3_DIR=/opt/z3
 
 # Build Alive2
